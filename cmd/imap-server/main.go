@@ -1,0 +1,63 @@
+// Command imap-server runs an IMAP server backed by DynamoDB and S3.
+// Messages are ingested by SES receipt rules; this server provides
+// read access to them via the IMAP protocol.
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/service/ssm"
+
+	"github.com/soapergem/ses-imap/internal/config"
+	imapserver "github.com/soapergem/ses-imap/internal/imap"
+	"github.com/soapergem/ses-imap/internal/store"
+)
+
+func main() {
+	cfg, err := config.FromEnv()
+	if err != nil {
+		log.Fatalf("failed to load config: %v", err)
+	}
+
+	ctx := context.Background()
+
+	st, err := store.New(ctx, cfg)
+	if err != nil {
+		log.Fatalf("failed to create store: %v", err)
+	}
+
+	// Ensure the default mailbox exists.
+	if _, err := st.EnsureMailbox(ctx, cfg.DefaultMailbox); err != nil {
+		log.Fatalf("failed to ensure default mailbox: %v", err)
+	}
+
+	// Create SSM client for Parameter Store auth.
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, awsconfig.WithRegion(cfg.AWSRegion))
+	if err != nil {
+		log.Fatalf("failed to load AWS config: %v", err)
+	}
+	ssmClient := ssm.NewFromConfig(awsCfg)
+	auth := store.NewAuth(cfg, ssmClient)
+
+	srv := imapserver.NewServer(cfg, st, auth)
+
+	// Handle graceful shutdown.
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		log.Println("shutting down...")
+		if err := srv.Close(); err != nil {
+			log.Printf("error closing server: %v", err)
+		}
+	}()
+
+	if err := srv.ListenAndServe(); err != nil {
+		log.Fatalf("IMAP server error: %v", err)
+	}
+}

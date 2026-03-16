@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: {{ .Values.app.name }}
+  name: {{ .Values.app.name }}
+  namespace: {{ .Release.Namespace }}
+spec:
+  replicas: {{ .Values.app.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Values.app.name }}
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.app.name }}
+    spec:
+      imagePullSecrets:
+      - name: {{ .Values.image.pullSecretName }}
+      containers:
+      - name: imap-server
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: Always
+        ports:
+        - containerPort: {{ .Values.app.port }}
+          protocol: TCP
+        env:
+        - name: AWS_REGION
+          value: {{ .Values.aws.region | quote }}
+        - name: DYNAMODB_TABLE
+          value: {{ .Values.config.dynamodbTable | quote }}
+        - name: S3_BUCKET
+          value: {{ .Values.config.s3Bucket | quote }}
+        - name: S3_PREFIX
+          value: {{ .Values.config.s3Prefix | quote }}
+        - name: DEFAULT_MAILBOX
+          value: {{ .Values.config.defaultMailbox | quote }}
+        - name: SSM_PREFIX
+          value: {{ .Values.config.ssmPrefix | quote }}
+        - name: SSM_CACHE_TTL
+          value: {{ .Values.config.ssmCacheTTL | quote }}
+        - name: IMAP_ADDR
+          value: ":{{ .Values.app.port }}"
+        - name: AWS_ACCESS_KEY_ID
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secretName }}
+              key: aws-access-key
+        - name: AWS_SECRET_ACCESS_KEY
+          valueFrom:
+            secretKeyRef:
+              name: {{ .Values.app.secretName }}
+              key: aws-secret-key
+      restartPolicy: Always

@@ -1,0 +1,21 @@
+image:
+  repository: ""
+  tag: latest
+  pullSecretName: k8s-ecr-login-renew-docker-secret
+
+app:
+  name: ses-imap
+  secretName: ses-imap
+  replicas: 1
+  port: 143
+
+aws:
+  region: us-east-1
+
+config:
+  dynamodbTable: ses-imap-messages
+  s3Bucket: ""
+  s3Prefix: ""
+  defaultMailbox: INBOX
+  ssmPrefix: /ses-imap/users
+  ssmCacheTTL: "300"

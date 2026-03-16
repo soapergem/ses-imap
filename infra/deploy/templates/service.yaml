@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.app.name }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: {{ .Values.app.name }}
+spec:
+  ports:
+  - name: imap
+    port: {{ .Values.app.port }}
+    targetPort: {{ .Values.app.port }}
+    protocol: TCP
+  selector:
+    app: {{ .Values.app.name }}
