@@ -3,6 +3,7 @@ ecr_repo := env("ECR_REPO", "ses-imap")
 region := env("AWS_REGION", "us-east-1")
 s3_bucket := env("S3_BUCKET")
 image_pull_secret := env("IMAGE_PULL_SECRET")
+imap_domain := env("IMAP_DOMAIN")
 
 default:
     @just --list | grep -v "^    default$"
@@ -35,6 +36,7 @@ deploy:
     @helm upgrade --install ses-imap infra/deploy \
         --set image.repository={{account_id}}.dkr.ecr.{{region}}.amazonaws.com/{{ecr_repo}} \
         --set image.pullSecretName={{image_pull_secret}} \
+        --set app.domain={{imap_domain}} \
         --set config.s3Bucket={{s3_bucket}}
 
 # uninstall helm chart

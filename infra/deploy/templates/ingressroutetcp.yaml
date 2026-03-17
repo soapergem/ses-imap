@@ -1,0 +1,17 @@
+apiVersion: traefik.io/v1alpha1
+kind: IngressRouteTCP
+metadata:
+  name: {{ .Values.app.name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
+spec:
+  entryPoints:
+  - {{ .Values.ingress.entryPoint }}
+  routes:
+  - match: HostSNI(`{{ .Values.app.domain }}`)
+    services:
+    - name: {{ .Values.app.name }}
+      port: {{ .Values.app.port }}
+  tls:
+    secretName: {{ .Values.app.name }}-tls

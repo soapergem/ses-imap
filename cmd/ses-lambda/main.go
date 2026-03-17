@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"mime"
@@ -72,16 +73,6 @@ func processRecord(ctx context.Context, cfg *config.Config, st *store.Store, rec
 		return fmt.Errorf("ensuring mailbox %q: %w", mailbox, err)
 	}
 
-	// Idempotency check: skip if this message was already indexed.
-	exists, err := st.MessageExistsByS3Key(ctx, mailbox, s3Key)
-	if err != nil {
-		return fmt.Errorf("checking for existing message: %w", err)
-	}
-	if exists {
-		log.Printf("message %s already indexed in mailbox %s, skipping", sesMsg.Mail.MessageID, mailbox)
-		return nil
-	}
-
 	// Allocate a UID.
 	uid, err := st.AllocateUID(ctx, mailbox)
 	if err != nil {
@@ -109,7 +100,14 @@ func processRecord(ctx context.Context, cfg *config.Config, st *store.Store, rec
 		Flags:       []string{},
 	}
 
-	if err := st.PutMessage(ctx, meta); err != nil {
+	// Atomic write with dedup sentinel -- prevents duplicate entries
+	// if the Lambda is invoked more than once for the same message.
+	if err := st.PutMessageOnce(ctx, meta); err != nil {
+		if errors.Is(err, store.ErrDuplicateMessage) {
+			log.Printf("message %s already indexed in mailbox %s, skipping", sesMsg.Mail.MessageID, mailbox)
+			st.ReleaseUID(ctx, mailbox, uid)
+			return nil
+		}
 		return fmt.Errorf("writing message metadata: %w", err)
 	}
 

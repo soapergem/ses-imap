@@ -6,11 +6,16 @@ image:
 app:
   name: ses-imap
   secretName: ses-imap
+  domain: ""
   replicas: 1
   port: 143
 
 aws:
   region: us-east-1
+
+ingress:
+  entryPoint: imaps
+  clusterIssuer: letsencrypt-prod
 
 config:
   dynamodbTable: ses-imap-messages

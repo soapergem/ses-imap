@@ -169,48 +169,114 @@ func (s *Store) AllocateUID(ctx context.Context, mailbox string) (uint32, error)
 	return uint32(oldNext), nil
 }
 
-// MessageExistsByS3Key checks if a message with the given S3 key already exists in a mailbox.
-func (s *Store) MessageExistsByS3Key(ctx context.Context, mailbox, s3Key string) (bool, error) {
-	keyCond := expression.KeyAnd(
-		expression.Key("mailbox").Equal(expression.Value(mailbox)),
-		expression.Key("uid").GreaterThan(expression.Value(0)),
-	)
-	filter := expression.Name("s3_key").Equal(expression.Value(s3Key))
-	expr, err := expression.NewBuilder().WithKeyCondition(keyCond).WithFilter(filter).Build()
-	if err != nil {
-		return false, fmt.Errorf("building expression: %w", err)
-	}
-
-	result, err := s.dynamo.Query(ctx, &dynamodb.QueryInput{
-		TableName:                 &s.tableName,
-		KeyConditionExpression:    expr.KeyCondition(),
-		FilterExpression:          expr.Filter(),
-		ExpressionAttributeNames:  expr.Names(),
-		ExpressionAttributeValues: expr.Values(),
-		Limit:                     aws.Int32(1),
+// ReleaseUID attempts to decrement uid_next back by one, but only if no other
+// UID has been allocated since. This is a best-effort cleanup for wasted UIDs
+// when a duplicate message is detected.
+func (s *Store) ReleaseUID(ctx context.Context, mailbox string, uid uint32) {
+	key, err := attributevalue.MarshalMap(map[string]interface{}{
+		"mailbox": mailbox,
+		"uid":     0,
 	})
 	if err != nil {
-		return false, fmt.Errorf("querying for existing message: %w", err)
+		return
 	}
 
-	return len(result.Items) > 0, nil
+	expectedNext := strconv.FormatUint(uint64(uid+1), 10)
+	_, _ = s.dynamo.UpdateItem(ctx, &dynamodb.UpdateItemInput{
+		TableName:           &s.tableName,
+		Key:                 key,
+		UpdateExpression:    aws.String("SET uid_next = uid_next - :one"),
+		ConditionExpression: aws.String("uid_next = :expected"),
+		ExpressionAttributeValues: map[string]dynamotypes.AttributeValue{
+			":one":      &dynamotypes.AttributeValueMemberN{Value: "1"},
+			":expected": &dynamotypes.AttributeValueMemberN{Value: expectedNext},
+		},
+	})
 }
 
-// PutMessage writes a message metadata record to DynamoDB.
-func (s *Store) PutMessage(ctx context.Context, msg *MessageMeta) error {
+// ErrDuplicateMessage is returned when a message with the same S3 key already exists.
+var ErrDuplicateMessage = fmt.Errorf("duplicate message")
+
+// PutMessageOnce atomically writes a message metadata record and a dedup sentinel.
+// The dedup sentinel uses a negative UID derived from a hash of the S3 key.
+// If the sentinel already exists, ErrDuplicateMessage is returned.
+func (s *Store) PutMessageOnce(ctx context.Context, msg *MessageMeta) error {
 	item, err := attributevalue.MarshalMap(msg)
 	if err != nil {
 		return fmt.Errorf("marshaling message: %w", err)
 	}
 
-	_, err = s.dynamo.PutItem(ctx, &dynamodb.PutItemInput{
-		TableName: &s.tableName,
-		Item:      item,
+	// Use a negative UID as the dedup sentinel key to avoid collisions with real UIDs.
+	dedupUID := dedupSentinelUID(msg.S3Key)
+	dedupItem, err := attributevalue.MarshalMap(map[string]interface{}{
+		"mailbox": msg.Mailbox,
+		"uid":     dedupUID,
+		"s3_key":  msg.S3Key,
 	})
 	if err != nil {
-		return fmt.Errorf("putting message: %w", err)
+		return fmt.Errorf("marshaling dedup sentinel: %w", err)
+	}
+
+	cond := expression.AttributeNotExists(expression.Name("mailbox"))
+	expr, err := expression.NewBuilder().WithCondition(cond).Build()
+	if err != nil {
+		return fmt.Errorf("building condition expression: %w", err)
+	}
+
+	_, err = s.dynamo.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
+		TransactItems: []dynamotypes.TransactWriteItem{
+			{
+				// Dedup sentinel: fails if it already exists.
+				Put: &dynamotypes.Put{
+					TableName:                 &s.tableName,
+					Item:                      dedupItem,
+					ConditionExpression:       expr.Condition(),
+					ExpressionAttributeNames:  expr.Names(),
+					ExpressionAttributeValues: expr.Values(),
+				},
+			},
+			{
+				// The actual message item.
+				Put: &dynamotypes.Put{
+					TableName: &s.tableName,
+					Item:      item,
+				},
+			},
+		},
+	})
+	if err != nil {
+		if isTransactionConflict(err) {
+			return ErrDuplicateMessage
+		}
+		return fmt.Errorf("writing message: %w", err)
 	}
 	return nil
+}
+
+// dedupSentinelUID generates a negative UID for dedup sentinel items.
+// Uses a simple hash of the S3 key to produce a stable negative integer.
+func dedupSentinelUID(s3Key string) int32 {
+	var h int32
+	for _, c := range s3Key {
+		h = h*31 + int32(c)
+	}
+	if h > 0 {
+		h = -h
+	}
+	if h == 0 {
+		h = -1
+	}
+	return h
+}
+
+// isTransactionConflict checks if a DynamoDB error is a transaction cancellation
+// due to a conditional check failure.
+func isTransactionConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "TransactionCanceledException") ||
+		strings.Contains(err.Error(), "ConditionalCheckFailed")
 }
 
 // ListMessages returns all message metadata for a mailbox, ordered by UID.
