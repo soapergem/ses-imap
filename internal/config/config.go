@@ -34,6 +34,9 @@ type Config struct {
 
 	// Default mailbox for incoming messages.
 	DefaultMailbox string
+
+	// Log level: "debug", "info", "warn", "error".
+	LogLevel string
 }
 
 // FromEnv loads configuration from environment variables.
@@ -46,6 +49,7 @@ func FromEnv() (*Config, error) {
 		SSMPrefix:      getEnv("SSM_PREFIX", "/ses-imap/users"),
 		SSMCacheTTL:    getEnvInt("SSM_CACHE_TTL", 300),
 		DefaultMailbox: getEnv("DEFAULT_MAILBOX", "INBOX"),
+		LogLevel:       getEnv("LOG_LEVEL", "info"),
 	}
 
 	if cfg.S3Bucket == "" {

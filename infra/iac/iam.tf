@@ -62,6 +62,7 @@ data "aws_iam_policy_document" "imap_server" {
     effect = "Allow"
     actions = [
       "dynamodb:GetItem",
+      "dynamodb:PutItem",
       "dynamodb:Query",
       "dynamodb:UpdateItem",
       "dynamodb:DeleteItem",
@@ -85,4 +86,41 @@ data "aws_iam_policy_document" "imap_server" {
     ]
     resources = ["arn:aws:ssm:${var.aws_region}:${local.account_id}:parameter${local.ssm_prefix}/*"]
   }
+}
+
+# --------------------------------------------------------------------------
+# IMAP server IAM user + access key
+# --------------------------------------------------------------------------
+
+resource "aws_iam_user" "imap_server" {
+  name = "${local.name_prefix}ses-imap-server"
+
+  tags = {
+    Project = local.project_tag
+  }
+}
+
+resource "aws_iam_user_policy" "imap_server" {
+  name   = "${local.name_prefix}ses-imap-server-policy"
+  user   = aws_iam_user.imap_server.name
+  policy = data.aws_iam_policy_document.imap_server.json
+}
+
+# Allow the IMAP server user to send email via SES SMTP.
+data "aws_iam_policy_document" "ses_send" {
+  statement {
+    effect    = "Allow"
+    actions   = ["ses:SendRawEmail"]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_user_policy" "ses_send" {
+  name   = "${local.name_prefix}ses-imap-ses-send"
+  user   = aws_iam_user.imap_server.name
+  policy = data.aws_iam_policy_document.ses_send.json
+}
+
+resource "aws_iam_access_key" "imap_server" {
+  user = aws_iam_user.imap_server.name
 }

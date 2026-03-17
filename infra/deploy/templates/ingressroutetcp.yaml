@@ -3,8 +3,6 @@ kind: IngressRouteTCP
 metadata:
   name: {{ .Values.app.name }}
   namespace: {{ .Release.Namespace }}
-  annotations:
-    cert-manager.io/cluster-issuer: {{ .Values.ingress.clusterIssuer }}
 spec:
   entryPoints:
   - {{ .Values.ingress.entryPoint }}

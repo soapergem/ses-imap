@@ -66,7 +66,7 @@ add-user email password:
         --value "$HASH" \
         --region {{region}} \
         --overwrite
-    @echo "Created IMAP user {{email}}"
+    echo "Created IMAP user {{email}}"
 
 # clean up build artifacts
 clean:

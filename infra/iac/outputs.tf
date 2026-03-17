@@ -8,11 +8,6 @@ output "dynamodb_table_name" {
   value       = local.dynamodb_table
 }
 
-output "imap_server_policy_json" {
-  description = "IAM policy JSON for the IMAP server (attach to your K8s pod role)"
-  value       = data.aws_iam_policy_document.imap_server.json
-}
-
 output "lambda_function_arn" {
   description = "ARN of the SES ingest Lambda function"
   value       = aws_lambda_function.ses_ingest.arn
@@ -26,4 +21,21 @@ output "lambda_role_arn" {
 output "ssm_prefix" {
   description = "SSM Parameter Store prefix for IMAP users"
   value       = local.ssm_prefix
+}
+
+output "imap_server_access_key_id" {
+  description = "AWS access key ID for the IMAP server"
+  value       = aws_iam_access_key.imap_server.id
+}
+
+output "imap_server_secret_access_key" {
+  description = "AWS secret access key for the IMAP server"
+  value       = aws_iam_access_key.imap_server.secret
+  sensitive   = true
+}
+
+output "ses_smtp_password_v4" {
+  description = "SES SMTP password (for sending email via SES SMTP interface)"
+  value       = aws_iam_access_key.imap_server.ses_smtp_password_v4
+  sensitive   = true
 }

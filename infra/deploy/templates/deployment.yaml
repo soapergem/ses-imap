@@ -25,28 +25,30 @@ spec:
         - containerPort: {{ .Values.app.port }}
           protocol: TCP
         env:
-        - name: AWS_REGION
-          value: {{ .Values.aws.region | quote }}
-        - name: DYNAMODB_TABLE
-          value: {{ .Values.config.dynamodbTable | quote }}
-        - name: S3_BUCKET
-          value: {{ .Values.config.s3Bucket | quote }}
-        - name: DEFAULT_MAILBOX
-          value: {{ .Values.config.defaultMailbox | quote }}
-        - name: SSM_PREFIX
-          value: {{ .Values.config.ssmPrefix | quote }}
-        - name: SSM_CACHE_TTL
-          value: {{ .Values.config.ssmCacheTTL | quote }}
-        - name: IMAP_ADDR
-          value: ":{{ .Values.app.port }}"
         - name: AWS_ACCESS_KEY_ID
           valueFrom:
             secretKeyRef:
               name: {{ .Values.app.secretName }}
               key: aws-access-key
+        - name: AWS_REGION
+          value: {{ .Values.aws.region | quote }}
         - name: AWS_SECRET_ACCESS_KEY
           valueFrom:
             secretKeyRef:
               name: {{ .Values.app.secretName }}
               key: aws-secret-key
+        - name: DEFAULT_MAILBOX
+          value: {{ .Values.config.defaultMailbox | quote }}
+        - name: DYNAMODB_TABLE
+          value: {{ .Values.config.dynamodbTable | quote }}
+        - name: IMAP_ADDR
+          value: ":{{ .Values.app.port }}"
+        - name: LOG_LEVEL
+          value: {{ .Values.config.logLevel | quote }}
+        - name: S3_BUCKET
+          value: {{ .Values.config.s3Bucket | quote }}
+        - name: SSM_CACHE_TTL
+          value: {{ .Values.config.ssmCacheTTL | quote }}
+        - name: SSM_PREFIX
+          value: {{ .Values.config.ssmPrefix | quote }}
       restartPolicy: Always

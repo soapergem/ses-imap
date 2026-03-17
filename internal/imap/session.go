@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -34,22 +35,29 @@ var _ imapserver.Session = (*Session)(nil)
 
 // Close is called when the client disconnects.
 func (s *Session) Close() error {
+	slog.Debug("session closed", "user", s.user)
 	return nil
 }
 
 // Login authenticates a user against SSM Parameter Store credentials.
 func (s *Session) Login(username, password string) error {
+	slog.Info("login attempt", "user", username)
 	ctx := context.Background()
 	if err := s.auth.Authenticate(ctx, username, password); err != nil {
+		slog.Warn("login failed", "user", username)
 		return imapserver.ErrAuthFailed
 	}
+	slog.Info("login success", "user", username)
 	s.user = username
 	return nil
 }
 
 // Select opens a mailbox.
 func (s *Session) Select(mailbox string, options *imap.SelectOptions) (*imap.SelectData, error) {
+	slog.Debug("SELECT", "user", s.user, "requested", mailbox)
+	mailbox = s.resolveMailbox(mailbox)
 	if err := s.checkMailboxAccess(mailbox); err != nil {
+		slog.Warn("SELECT denied", "user", s.user, "mailbox", mailbox)
 		return nil, err
 	}
 
@@ -67,6 +75,7 @@ func (s *Session) Select(mailbox string, options *imap.SelectOptions) (*imap.Sel
 
 	s.selectedMailbox = mailbox
 	s.messages = messages
+	slog.Info("SELECT", "user", s.user, "mailbox", mailbox, "messages", len(messages))
 
 	return &imap.SelectData{
 		Flags:          []imap.Flag{imap.FlagSeen, imap.FlagAnswered, imap.FlagFlagged, imap.FlagDeleted, imap.FlagDraft},
@@ -79,6 +88,7 @@ func (s *Session) Select(mailbox string, options *imap.SelectOptions) (*imap.Sel
 
 // Create creates a new mailbox.
 func (s *Session) Create(mailbox string, options *imap.CreateOptions) error {
+	mailbox = s.resolveMailbox(mailbox)
 	if err := s.checkMailboxAccess(mailbox); err != nil {
 		return err
 	}
@@ -109,14 +119,13 @@ func (s *Session) Unsubscribe(mailbox string) error {
 }
 
 // List lists mailboxes matching the given patterns.
+// We advertise INBOX as the only mailbox, which maps to the user's actual mailbox internally.
 func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
-	// Only list the authenticated user's mailbox.
-	mailbox := s.user
-
+	slog.Debug("LIST", "user", s.user, "ref", ref, "patterns", patterns)
 	for _, pattern := range patterns {
-		if imapserver.MatchList(mailbox, '/', ref, pattern) {
+		if imapserver.MatchList("INBOX", '/', ref, pattern) {
 			if err := w.WriteList(&imap.ListData{
-				Mailbox: mailbox,
+				Mailbox: "INBOX",
 				Delim:   '/',
 			}); err != nil {
 				return err
@@ -128,6 +137,8 @@ func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 
 // Status returns the status of a mailbox.
 func (s *Session) Status(mailbox string, options *imap.StatusOptions) (*imap.StatusData, error) {
+	slog.Debug("STATUS", "user", s.user, "requested", mailbox)
+	mailbox = s.resolveMailbox(mailbox)
 	if err := s.checkMailboxAccess(mailbox); err != nil {
 		return nil, err
 	}
@@ -219,6 +230,7 @@ func (s *Session) Unselect() error {
 
 // Expunge permanently removes messages marked with \Deleted.
 func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) error {
+	slog.Debug("EXPUNGE", "user", s.user)
 	ctx := context.Background()
 
 	var toExpunge []*store.MessageMeta
@@ -261,6 +273,7 @@ func (s *Session) Expunge(w *imapserver.ExpungeWriter, uids *imap.UIDSet) error 
 
 // Search searches for messages matching the given criteria.
 func (s *Session) Search(kind imapserver.NumKind, criteria *imap.SearchCriteria, options *imap.SearchOptions) (*imap.SearchData, error) {
+	slog.Debug("SEARCH", "user", s.user, "kind", kind)
 	var uids []imap.UID
 
 	for _, msg := range s.messages {
@@ -293,6 +306,7 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 	ctx := context.Background()
 
 	messages := s.resolveNumSet(numSet)
+	slog.Debug("FETCH", "user", s.user, "numSet", numSet, "resolved", len(messages))
 
 	for _, msg := range messages {
 		seqNum := s.seqNumForUID(msg.UID)
@@ -392,6 +406,7 @@ func (s *Session) Fetch(w *imapserver.FetchWriter, numSet imap.NumSet, options *
 
 // Store updates message flags.
 func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *imap.StoreFlags, options *imap.StoreOptions) error {
+	slog.Debug("STORE", "user", s.user, "op", flags.Op, "flags", flags.Flags)
 	ctx := context.Background()
 
 	messages := s.resolveNumSet(numSet)
@@ -535,14 +550,23 @@ func applyStoreFlags(existing []string, sf *imap.StoreFlags) []string {
 	return existing
 }
 
+// resolveMailbox maps INBOX to the authenticated user's mailbox name.
+// IMAP clients always expect INBOX to exist, so we treat it as an alias.
+func (s *Session) resolveMailbox(mailbox string) string {
+	if strings.EqualFold(mailbox, "INBOX") {
+		return s.user
+	}
+	return mailbox
+}
+
 // checkMailboxAccess verifies that the authenticated user is allowed to access
 // the given mailbox. Users can only access their own mailbox (the IMAP username
-// must match the mailbox name exactly).
+// must match the mailbox name exactly). INBOX is treated as an alias.
 func (s *Session) checkMailboxAccess(mailbox string) error {
 	if s.user == "" {
 		return fmt.Errorf("not authenticated")
 	}
-	if strings.EqualFold(mailbox, s.user) {
+	if strings.EqualFold(s.resolveMailbox(mailbox), s.user) {
 		return nil
 	}
 	return fmt.Errorf("access denied to mailbox %q", mailbox)
