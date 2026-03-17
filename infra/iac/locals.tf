@@ -15,4 +15,9 @@ locals {
       for r in mb.recipients : r => mb.s3_prefix
     }
   ]...)
+
+  # Deduplicated set of all additional Lambda ARNs across all mailboxes.
+  additional_lambda_arns = toset(flatten([
+    for _, mb in var.mailboxes : mb.additional_lambdas
+  ]))
 }

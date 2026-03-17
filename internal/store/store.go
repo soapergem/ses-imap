@@ -169,6 +169,33 @@ func (s *Store) AllocateUID(ctx context.Context, mailbox string) (uint32, error)
 	return uint32(oldNext), nil
 }
 
+// MessageExistsByS3Key checks if a message with the given S3 key already exists in a mailbox.
+func (s *Store) MessageExistsByS3Key(ctx context.Context, mailbox, s3Key string) (bool, error) {
+	keyCond := expression.KeyAnd(
+		expression.Key("mailbox").Equal(expression.Value(mailbox)),
+		expression.Key("uid").GreaterThan(expression.Value(0)),
+	)
+	filter := expression.Name("s3_key").Equal(expression.Value(s3Key))
+	expr, err := expression.NewBuilder().WithKeyCondition(keyCond).WithFilter(filter).Build()
+	if err != nil {
+		return false, fmt.Errorf("building expression: %w", err)
+	}
+
+	result, err := s.dynamo.Query(ctx, &dynamodb.QueryInput{
+		TableName:                 &s.tableName,
+		KeyConditionExpression:    expr.KeyCondition(),
+		FilterExpression:          expr.Filter(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+		Limit:                     aws.Int32(1),
+	})
+	if err != nil {
+		return false, fmt.Errorf("querying for existing message: %w", err)
+	}
+
+	return len(result.Items) > 0, nil
+}
+
 // PutMessage writes a message metadata record to DynamoDB.
 func (s *Store) PutMessage(ctx context.Context, msg *MessageMeta) error {
 	item, err := attributevalue.MarshalMap(msg)

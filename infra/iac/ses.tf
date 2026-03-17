@@ -1,3 +1,14 @@
+# Grant SES permission to invoke additional Lambdas referenced by mailbox rules.
+resource "aws_lambda_permission" "ses_invoke_additional" {
+  for_each = local.additional_lambda_arns
+
+  statement_id   = "AllowSESInvoke-${replace(each.value, "/[^a-zA-Z0-9]/", "-")}"
+  action         = "lambda:InvokeFunction"
+  function_name  = each.value
+  principal      = "ses.amazonaws.com"
+  source_account = local.account_id
+}
+
 resource "aws_ses_receipt_rule" "mailbox" {
   for_each = var.mailboxes
 
@@ -30,4 +41,6 @@ resource "aws_ses_receipt_rule" "mailbox" {
       position        = 3 + lambda_action.key
     }
   }
+
+  depends_on = [aws_lambda_permission.ses_invoke, aws_lambda_permission.ses_invoke_additional]
 }

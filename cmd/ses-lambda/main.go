@@ -72,6 +72,16 @@ func processRecord(ctx context.Context, cfg *config.Config, st *store.Store, rec
 		return fmt.Errorf("ensuring mailbox %q: %w", mailbox, err)
 	}
 
+	// Idempotency check: skip if this message was already indexed.
+	exists, err := st.MessageExistsByS3Key(ctx, mailbox, s3Key)
+	if err != nil {
+		return fmt.Errorf("checking for existing message: %w", err)
+	}
+	if exists {
+		log.Printf("message %s already indexed in mailbox %s, skipping", sesMsg.Mail.MessageID, mailbox)
+		return nil
+	}
+
 	// Allocate a UID.
 	uid, err := st.AllocateUID(ctx, mailbox)
 	if err != nil {
