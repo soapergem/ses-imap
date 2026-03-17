@@ -37,6 +37,9 @@ type Config struct {
 
 	// Log level: "debug", "info", "warn", "error".
 	LogLevel string
+
+	// Health check listen address.
+	HealthAddr string
 }
 
 // FromEnv loads configuration from environment variables.
@@ -50,6 +53,7 @@ func FromEnv() (*Config, error) {
 		SSMCacheTTL:    getEnvInt("SSM_CACHE_TTL", 300),
 		DefaultMailbox: getEnv("DEFAULT_MAILBOX", "INBOX"),
 		LogLevel:       getEnv("LOG_LEVEL", "info"),
+		HealthAddr:     getEnv("HEALTH_ADDR", ":8080"),
 	}
 
 	if cfg.S3Bucket == "" {

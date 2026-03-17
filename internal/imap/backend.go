@@ -1,6 +1,8 @@
 package imap
 
 import (
+	"log/slog"
+
 	"github.com/emersion/go-imap/v2/imapserver"
 
 	"github.com/soapergem/ses-imap/internal/config"
@@ -10,6 +12,7 @@ import (
 // NewSession creates a new IMAP session for an incoming connection.
 func NewSession(cfg *config.Config, st *store.Store, auth *store.Auth) func(*imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
 	return func(conn *imapserver.Conn) (imapserver.Session, *imapserver.GreetingData, error) {
+		slog.Debug("new connection")
 		return &Session{
 			cfg:   cfg,
 			store: st,

@@ -24,6 +24,16 @@ spec:
         ports:
         - containerPort: {{ .Values.app.port }}
           protocol: TCP
+        - containerPort: {{ .Values.app.healthPort }}
+          protocol: TCP
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ .Values.app.healthPort }}
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: {{ .Values.app.healthPort }}
         env:
         - name: AWS_ACCESS_KEY_ID
           valueFrom:

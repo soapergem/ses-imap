@@ -9,6 +9,7 @@ app:
   domain: ""
   replicas: 1
   port: 143
+  healthPort: 8080
 
 aws:
   region: us-east-1

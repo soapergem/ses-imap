@@ -13,3 +13,6 @@ spec:
       port: {{ .Values.app.port }}
   tls:
     secretName: {{ .Values.app.name }}-tls
+    options:
+      name: {{ .Values.app.name }}
+      namespace: {{ .Release.Namespace }}

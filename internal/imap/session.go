@@ -35,13 +35,16 @@ var _ imapserver.Session = (*Session)(nil)
 
 // Close is called when the client disconnects.
 func (s *Session) Close() error {
-	slog.Debug("session closed", "user", s.user)
+	if s.user != "" {
+		slog.Debug("session closed", "user", s.user)
+	}
 	return nil
 }
 
 // Login authenticates a user against SSM Parameter Store credentials.
 func (s *Session) Login(username, password string) error {
 	slog.Info("login attempt", "user", username)
+	slog.Debug("login detail", "user_len", len(username), "pass_len", len(password))
 	ctx := context.Background()
 	if err := s.auth.Authenticate(ctx, username, password); err != nil {
 		slog.Warn("login failed", "user", username)

@@ -4,6 +4,7 @@ package imap
 import (
 	"log"
 	"net"
+	"os"
 
 	"github.com/emersion/go-imap/v2"
 	"github.com/emersion/go-imap/v2/imapserver"
@@ -30,11 +31,17 @@ func NewServer(cfg *config.Config, st *store.Store, auth *store.Auth) *Server {
 		imap.CapIMAP4rev1: {},
 	}
 
-	s.imapSrv = imapserver.New(&imapserver.Options{
+	opts := &imapserver.Options{
 		NewSession:   NewSession(cfg, st, auth),
 		Caps:         caps,
-		InsecureAuth: true, // TODO: add TLS support
-	})
+		InsecureAuth: true, // TLS is terminated by Traefik
+	}
+
+	if cfg.LogLevel == "debug" {
+		opts.DebugWriter = os.Stderr
+	}
+
+	s.imapSrv = imapserver.New(opts)
 
 	return s
 }

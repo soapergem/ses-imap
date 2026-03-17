@@ -7,6 +7,7 @@ import (
 	"context"
 	"log"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -62,6 +63,17 @@ func main() {
 	auth := store.NewAuth(cfg, ssmClient)
 
 	srv := imapserver.NewServer(cfg, st, auth)
+
+	// Start health check endpoint.
+	http.HandleFunc("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	go func() {
+		slog.Info("health check listening", "addr", cfg.HealthAddr)
+		if err := http.ListenAndServe(cfg.HealthAddr, nil); err != nil {
+			log.Fatalf("health check server error: %v", err)
+		}
+	}()
 
 	// Handle graceful shutdown.
 	sigCh := make(chan os.Signal, 1)
