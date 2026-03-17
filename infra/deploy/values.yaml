@@ -15,7 +15,6 @@ aws:
 config:
   dynamodbTable: ses-imap-messages
   s3Bucket: ""
-  s3Prefix: ""
   defaultMailbox: INBOX
   ssmPrefix: /ses-imap/users
   ssmCacheTTL: "300"

@@ -6,9 +6,10 @@ An IMAP server that provides read access to emails received by Amazon SES and st
 
 ```
 Inbound email
-  -> Amazon SES receipt rule
+  -> Amazon SES receipt rule (per mailbox)
       1. S3 action: writes raw RFC 5322 message to S3
       2. Lambda action: parses headers, writes metadata to DynamoDB
+      3. (optional) Additional Lambda actions
 
 IMAP client (Thunderbird, Apple Mail, etc.)
   -> IMAP server (this project, running in K8s)
@@ -26,7 +27,7 @@ IMAP client (Thunderbird, Apple Mail, etc.)
 | SES Lambda | `cmd/ses-lambda/` | Lambda function triggered by SES to index messages in DynamoDB |
 | Store layer | `internal/store/` | DynamoDB metadata + S3 body access + SSM auth |
 | Helm chart | `infra/deploy/` | Kubernetes deployment for the IMAP server |
-| Terraform | `infra/iac/` | DynamoDB table, Lambda, IAM roles, SES receipt rule, SSM parameters |
+| Terraform | `infra/iac/` | DynamoDB table, Lambda, IAM roles, SES receipt rules, SSM parameters |
 
 ## Prerequisites
 
@@ -40,7 +41,7 @@ IMAP client (Thunderbird, Apple Mail, etc.)
 
 ## Environment Variables
 
-Several Justfile recipes depend on environment variables for account-specific configuration.
+Several Justfile recipes depend on environment variables for account-specific configuration. Set these in your shell or via a `.envrc` file (gitignored by default):
 
 | Variable | Required | Description |
 |---|---|---|
@@ -58,41 +59,121 @@ export ECR_REPO="ses-imap"
 export S3_BUCKET="my-ses-email-bucket"
 ```
 
+## Terraform Configuration
+
+Terraform-specific configuration goes in `infra/iac/terraform.tfvars` (gitignored). The key variable is `mailboxes`, which defines the SES receipt rules to create. Each mailbox gets its own rule with an S3 action and the ingest Lambda, plus any additional Lambdas you specify.
+
+### Basic example (single mailbox)
+
+```hcl
+s3_bucket         = "my-ses-email-bucket"
+ses_rule_set_name = "default-rule-set"
+
+mailboxes = {
+  info = {
+    recipients = ["info@example.com"]
+    s3_prefix  = "example.com/info"
+  }
+}
+```
+
+### Multiple mailboxes with additional Lambdas and ordering
+
+```hcl
+s3_bucket         = "my-ses-email-bucket"
+ses_rule_set_name = "default-rule-set"
+
+mailboxes = {
+  info = {
+    recipients = ["info@example.com"]
+    s3_prefix  = "example.com/info"
+  }
+  alerts = {
+    recipients         = ["alerts@example.com"]
+    s3_prefix          = "example.com/alerts"
+    additional_lambdas = ["arn:aws:lambda:us-east-1:123456789012:function:alert-processor"]
+    after              = "info"
+  }
+}
+```
+
+### Domain catch-all
+
+```hcl
+s3_bucket         = "my-ses-email-bucket"
+ses_rule_set_name = "default-rule-set"
+
+mailboxes = {
+  catchall = {
+    recipients = ["example.com"]
+    s3_prefix  = "example.com/catchall"
+  }
+}
+```
+
+### No SES rules (manage rules separately)
+
+If `mailboxes` is omitted or empty, no SES receipt rules are created. The DynamoDB table, Lambda, IAM roles, and SSM parameters are still provisioned, and you can add the Lambda to your existing SES rules manually.
+
+```hcl
+s3_bucket         = "my-ses-email-bucket"
+ses_rule_set_name = "default-rule-set"
+```
+
+### Mailbox fields
+
+| Field | Required | Description |
+|---|---|---|
+| `recipients` | Yes | List of email addresses or domains to match |
+| `s3_prefix` | Yes | S3 key prefix for storing messages |
+| `additional_lambdas` | No | List of Lambda ARNs to invoke in addition to the ingest Lambda |
+| `after` | No | Key of another mailbox to place this rule after (controls SES rule ordering) |
+
 ## Quick Start
 
 ### 1. Create IMAP users
 
-Users are stored as bcrypt hashes in SSM Parameter Store under `/ses-imap/users/{username}`.
+Users are stored as bcrypt hashes in SSM Parameter Store. The IMAP username is the full email address (e.g., `user@example.com`), and the `@` is replaced with `/` in the SSM path. Each user can only access the IMAP mailbox matching their username.
 
 ```bash
 # Generate a bcrypt hash
 HASH=$(htpasswd -bnBC 10 "" 'mypassword' | tr -d ':\n' | sed 's/$2y/$2a/')
 
-# Store in Parameter Store
+# Create a per-user credential
 aws ssm put-parameter \
-  --name "/ses-imap/users/myuser" \
+  --name "/ses-imap/users/user/example.com" \
   --type SecureString \
   --value "$HASH"
 ```
 
-Or via Terraform by setting the `imap_users` variable (see below).
+Or via Terraform (keys use `localpart/domain` format):
+
+```hcl
+imap_users = {
+  "user/example.com" = "$2a$10$..."
+}
+```
+
+#### Domain-level shared credentials
+
+You can also create a domain-level credential that acts as a shared password for any address on that domain. This is useful for catch-all mailboxes where you don't know the addresses in advance. Per-user credentials take precedence over domain-level ones.
+
+```bash
+# Create a domain-level credential
+aws ssm put-parameter \
+  --name "/ses-imap/users/example.com" \
+  --type SecureString \
+  --value "$HASH"
+```
+
+With this in place, any `@example.com` address can log in using the shared password and access their own mailbox. For example, `random@example.com` logs in, the auth system checks for `/ses-imap/users/random/example.com` first, falls back to `/ses-imap/users/example.com`, and grants access only to the `random@example.com` mailbox.
 
 ### 2. Deploy infrastructure
 
+Create `infra/iac/terraform.tfvars` with your configuration (see above), then:
+
 ```bash
 just init
-
-# Create a terraform.tfvars file
-cat > infra/iac/terraform.tfvars <<EOF
-s3_bucket         = "my-ses-email-bucket"
-ses_rule_set_name = "my-rule-set"
-ses_recipients    = ["example.com"]
-
-imap_users = {
-  "myuser" = "$2a$10$..."  # bcrypt hash from step 1
-}
-EOF
-
 just plan
 just apply
 ```
@@ -100,8 +181,8 @@ just apply
 ### 3. Build and push the Lambda
 
 ```bash
-just package-lambda
-# Upload lambda.zip via Terraform (already handled by apply)
+just build-lambda
+# Upload lambda.zip via Terraform (already handled by just apply)
 ```
 
 ### 4. Build and push the container image
@@ -137,7 +218,7 @@ The Lambda derives the S3 object key from the recipient email address. For a mes
 example.com/user/abc123
 ```
 
-This matches the default SES receipt rule behavior when the S3 action prefix is set to `<domain>/<localpart>`. If your S3 layout differs, you can set the `S3_PREFIX` environment variable on the Lambda to use a static prefix instead (the key becomes `<S3_PREFIX><message-id>`).
+This matches the SES receipt rule behavior when the S3 action prefix is set to `<domain>/<localpart>` via the `s3_prefix` field in the `mailboxes` variable.
 
 ## Configuration
 
@@ -148,7 +229,6 @@ This matches the default SES receipt rule behavior when the S3 action prefix is 
 | `AWS_REGION` | `us-east-1` | AWS region |
 | `DYNAMODB_TABLE` | `ses-imap-messages` | DynamoDB table name |
 | `S3_BUCKET` | *(required)* | S3 bucket with SES messages |
-| `S3_PREFIX` | `""` | S3 key prefix for SES messages |
 | `IMAP_ADDR` | `:143` | IMAP listen address |
 | `SSM_PREFIX` | `/ses-imap/users` | SSM parameter prefix for user credentials |
 | `SSM_CACHE_TTL` | `300` | Credential cache TTL in seconds |
@@ -161,23 +241,19 @@ This matches the default SES receipt rule behavior when the S3 action prefix is 
 | `AWS_REGION` | `us-east-1` | AWS region |
 | `DYNAMODB_TABLE` | `ses-imap-messages` | DynamoDB table name |
 | `S3_BUCKET` | *(required)* | S3 bucket with SES messages |
-| `S3_PREFIX` | `""` | Static S3 key prefix (overrides recipient-based derivation if set) |
 | `DEFAULT_MAILBOX` | `INBOX` | Default mailbox for incoming messages |
 
 ### Terraform Variables
 
 | Variable | Default | Description |
 |---|---|---|
+| `prefix` | `""` | Optional prefix for all resource names |
 | `aws_region` | `us-east-1` | AWS region |
-| `dynamodb_table_name` | `ses-imap-messages` | DynamoDB table name |
-| `lambda_function_name` | `ses-imap-ingest` | Lambda function name |
 | `lambda_zip_path` | `../../lambda.zip` | Path to Lambda zip |
 | `s3_bucket` | *(required)* | S3 bucket for SES messages |
-| `s3_prefix` | `""` | S3 key prefix |
 | `default_mailbox` | `INBOX` | Default mailbox |
 | `ses_rule_set_name` | *(required)* | Existing SES receipt rule set |
-| `ses_recipients` | *(required)* | Email addresses/domains to match |
-| `ssm_prefix` | `/ses-imap/users` | SSM prefix for IMAP users |
+| `mailboxes` | `{}` | Map of mailbox definitions (see above) |
 | `imap_users` | `{}` | Map of username to bcrypt hash |
 
 ## DynamoDB Schema
@@ -196,22 +272,20 @@ Mailbox metadata (uid=0): `uid_next`, `uid_validity`.
 ## Justfile Recipes
 
 ```
-just build          # build both IMAP server and Lambda binaries
-just build-server   # build IMAP server only
-just build-lambda   # build Lambda only
-just package-lambda # build + zip Lambda for deployment
-just test           # run tests
-just build-image    # build multi-arch container image
-just login          # authenticate with ECR
-just push           # push container image to ECR
-just deploy         # install/upgrade Helm chart
-just undeploy       # uninstall Helm chart
-just init        # terraform init
-just plan        # terraform plan
-just apply       # terraform apply
-just clean          # remove build artifacts
-just prune          # remove container images
-just setup          # initialize QEMU for multi-arch builds
+just build-lambda                       # build Lambda zip
+just test                               # run tests
+just build-image                        # build multi-arch container image
+just login                              # authenticate with ECR
+just push                               # push container image to ECR
+just deploy                             # install/upgrade Helm chart
+just undeploy                           # uninstall Helm chart
+just init                               # terraform init
+just plan                               # terraform plan
+just apply                              # terraform apply
+just add-user user@example.com pass     # create IMAP user in SSM
+just clean                              # remove build artifacts
+just prune                              # remove container images
+just setup                              # initialize QEMU for multi-arch builds
 ```
 
 ## IMAP Capabilities

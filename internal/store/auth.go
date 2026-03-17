@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,20 +69,23 @@ func (a *Auth) getBcryptHash(ctx context.Context, username string) (string, erro
 		return entry.bcryptHash, nil
 	}
 
-	// Fetch from SSM.
-	paramName := a.prefix + "/" + username
-	result, err := a.ssm.GetParameter(ctx, &ssm.GetParameterInput{
-		Name:           aws.String(paramName),
-		WithDecryption: aws.Bool(true),
-	})
+	// Fetch from SSM. Replace @ with / so that "gordon@example.com"
+	// maps to the parameter path "/ses-imap/users/gordon/example.com".
+	paramName := a.prefix + "/" + strings.Replace(username, "@", "/", 1)
+	hash, err := a.fetchParam(ctx, paramName)
+
+	// If the per-user parameter doesn't exist, fall back to a domain-level
+	// parameter (e.g., "/ses-imap/users/example.com") as a shared credential.
+	if err != nil {
+		if parts := strings.SplitN(username, "@", 2); len(parts) == 2 {
+			domainParam := a.prefix + "/" + parts[1]
+			hash, err = a.fetchParam(ctx, domainParam)
+		}
+	}
+
 	if err != nil {
 		log.Printf("SSM lookup failed for user %q: %v", username, err)
 		return "", fmt.Errorf("user not found")
-	}
-
-	hash := aws.ToString(result.Parameter.Value)
-	if hash == "" {
-		return "", fmt.Errorf("empty hash for user %q", username)
 	}
 
 	// Update cache.
@@ -92,5 +96,21 @@ func (a *Auth) getBcryptHash(ctx context.Context, username string) (string, erro
 	}
 	a.mu.Unlock()
 
+	return hash, nil
+}
+
+// fetchParam retrieves a single SSM parameter value.
+func (a *Auth) fetchParam(ctx context.Context, name string) (string, error) {
+	result, err := a.ssm.GetParameter(ctx, &ssm.GetParameterInput{
+		Name:           aws.String(name),
+		WithDecryption: aws.Bool(true),
+	})
+	if err != nil {
+		return "", err
+	}
+	hash := aws.ToString(result.Parameter.Value)
+	if hash == "" {
+		return "", fmt.Errorf("empty parameter value for %q", name)
+	}
 	return hash, nil
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -48,6 +49,10 @@ func (s *Session) Login(username, password string) error {
 
 // Select opens a mailbox.
 func (s *Session) Select(mailbox string, options *imap.SelectOptions) (*imap.SelectData, error) {
+	if err := s.checkMailboxAccess(mailbox); err != nil {
+		return nil, err
+	}
+
 	ctx := context.Background()
 
 	meta, err := s.store.EnsureMailbox(ctx, mailbox)
@@ -74,6 +79,9 @@ func (s *Session) Select(mailbox string, options *imap.SelectOptions) (*imap.Sel
 
 // Create creates a new mailbox.
 func (s *Session) Create(mailbox string, options *imap.CreateOptions) error {
+	if err := s.checkMailboxAccess(mailbox); err != nil {
+		return err
+	}
 	ctx := context.Background()
 	_, err := s.store.EnsureMailbox(ctx, mailbox)
 	return err
@@ -102,8 +110,8 @@ func (s *Session) Unsubscribe(mailbox string) error {
 
 // List lists mailboxes matching the given patterns.
 func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
-	// For now, we only support INBOX.
-	mailbox := s.cfg.DefaultMailbox
+	// Only list the authenticated user's mailbox.
+	mailbox := s.user
 
 	for _, pattern := range patterns {
 		if imapserver.MatchList(mailbox, '/', ref, pattern) {
@@ -120,6 +128,10 @@ func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, 
 
 // Status returns the status of a mailbox.
 func (s *Session) Status(mailbox string, options *imap.StatusOptions) (*imap.StatusData, error) {
+	if err := s.checkMailboxAccess(mailbox); err != nil {
+		return nil, err
+	}
+
 	ctx := context.Background()
 
 	meta, err := s.store.GetMailboxMeta(ctx, mailbox)
@@ -506,14 +518,7 @@ func applyStoreFlags(existing []string, sf *imap.StoreFlags) []string {
 		flags := make([]string, len(existing))
 		copy(flags, existing)
 		for _, f := range newFlags {
-			found := false
-			for _, ef := range flags {
-				if ef == f {
-					found = true
-					break
-				}
-			}
-			if !found {
+			if !slices.Contains(flags, f) {
 				flags = append(flags, f)
 			}
 		}
@@ -521,18 +526,24 @@ func applyStoreFlags(existing []string, sf *imap.StoreFlags) []string {
 	case imap.StoreFlagsDel:
 		var flags []string
 		for _, ef := range existing {
-			remove := false
-			for _, f := range newFlags {
-				if ef == f {
-					remove = true
-					break
-				}
-			}
-			if !remove {
+			if !slices.Contains(newFlags, ef) {
 				flags = append(flags, ef)
 			}
 		}
 		return flags
 	}
 	return existing
+}
+
+// checkMailboxAccess verifies that the authenticated user is allowed to access
+// the given mailbox. Users can only access their own mailbox (the IMAP username
+// must match the mailbox name exactly).
+func (s *Session) checkMailboxAccess(mailbox string) error {
+	if s.user == "" {
+		return fmt.Errorf("not authenticated")
+	}
+	if strings.EqualFold(mailbox, s.user) {
+		return nil
+	}
+	return fmt.Errorf("access denied to mailbox %q", mailbox)
 }

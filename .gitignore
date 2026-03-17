@@ -4,5 +4,6 @@ lambda.zip
 *.env*
 .terraform/
 *.tfstate
-*.tfstate.backup
+*.tfstate.*backup
+*.tfvars
 .terraform.lock.hcl

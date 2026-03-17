@@ -1,4 +1,4 @@
-FROM golang:1.24-alpine AS builder
+FROM docker.io/library/golang:1.25-alpine AS builder
 
 WORKDIR /app
 
@@ -8,7 +8,6 @@ RUN go mod download
 COPY . .
 
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /imap-server ./cmd/imap-server
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /ses-lambda ./cmd/ses-lambda
 
 FROM gcr.io/distroless/static:nonroot
 

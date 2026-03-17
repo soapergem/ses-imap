@@ -31,8 +31,6 @@ spec:
           value: {{ .Values.config.dynamodbTable | quote }}
         - name: S3_BUCKET
           value: {{ .Values.config.s3Bucket | quote }}
-        - name: S3_PREFIX
-          value: {{ .Values.config.s3Prefix | quote }}
         - name: DEFAULT_MAILBOX
           value: {{ .Values.config.defaultMailbox | quote }}
         - name: SSM_PREFIX

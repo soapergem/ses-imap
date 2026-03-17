@@ -2,6 +2,7 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 )
@@ -17,8 +18,9 @@ type Config struct {
 	// S3 bucket where SES stores raw messages.
 	S3Bucket string
 
-	// S3 key prefix for SES messages (optional).
-	S3Prefix string
+	// S3 prefix map: recipient -> S3 key prefix (for Lambda).
+	// JSON-encoded map, e.g., {"gordon@example.com":"example.com/gordon"}
+	S3PrefixMap map[string]string
 
 	// IMAP server listen address.
 	IMAPAddr string
@@ -40,7 +42,6 @@ func FromEnv() (*Config, error) {
 		AWSRegion:      getEnv("AWS_REGION", "us-east-1"),
 		DynamoDBTable:  getEnv("DYNAMODB_TABLE", "ses-imap-messages"),
 		S3Bucket:       os.Getenv("S3_BUCKET"),
-		S3Prefix:       getEnv("S3_PREFIX", ""),
 		IMAPAddr:       getEnv("IMAP_ADDR", ":143"),
 		SSMPrefix:      getEnv("SSM_PREFIX", "/ses-imap/users"),
 		SSMCacheTTL:    getEnvInt("SSM_CACHE_TTL", 300),
@@ -60,12 +61,17 @@ func LambdaFromEnv() (*Config, error) {
 		AWSRegion:      getEnv("AWS_REGION", "us-east-1"),
 		DynamoDBTable:  getEnv("DYNAMODB_TABLE", "ses-imap-messages"),
 		S3Bucket:       os.Getenv("S3_BUCKET"),
-		S3Prefix:       getEnv("S3_PREFIX", ""),
 		DefaultMailbox: getEnv("DEFAULT_MAILBOX", "INBOX"),
 	}
 
 	if cfg.S3Bucket == "" {
 		return nil, fmt.Errorf("S3_BUCKET is required")
+	}
+
+	if raw := os.Getenv("S3_PREFIX_MAP"); raw != "" {
+		if err := json.Unmarshal([]byte(raw), &cfg.S3PrefixMap); err != nil {
+			return nil, fmt.Errorf("parsing S3_PREFIX_MAP: %w", err)
+		}
 	}
 
 	return cfg, nil

@@ -6,27 +6,17 @@ s3_bucket := env("S3_BUCKET")
 default:
     @just --list | grep -v "^    default$"
 
-# build the IMAP server binary
-build-server:
-    go build -ldflags="-s -w" -o bin/imap-server ./cmd/imap-server
-
-# build the Lambda binary (Linux ARM64 for provided.al2023)
+# build the Lambda zip (Linux ARM64 for provided.al2023)
 build-lambda:
     GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/bootstrap ./cmd/ses-lambda
-
-# package lambda into a zip for deployment
-package-lambda: build-lambda
     cd bin && zip ../lambda.zip bootstrap
-
-# build both binaries
-build: build-server build-lambda
 
 # run tests
 test:
     go test ./...
 
 # build multi-architecture container image
-build-image:
+build:
     @podman manifest create {{account_id}}.dkr.ecr.{{region}}.amazonaws.com/{{ecr_repo}}:latest || true
     @podman build --platform linux/arm64 --manifest {{account_id}}.dkr.ecr.{{region}}.amazonaws.com/{{ecr_repo}}:latest .
     @podman build --platform linux/amd64 --manifest {{account_id}}.dkr.ecr.{{region}}.amazonaws.com/{{ecr_repo}}:latest .
@@ -51,15 +41,28 @@ undeploy:
 
 # apply terraform
 apply:
-    cd infra/iac && terraform apply
+    terraform -chdir=infra/iac apply
 
 # plan terraform
 plan:
-    cd infra/iac && terraform plan
+    terraform -chdir=infra/iac plan
 
 # initialize terraform
 init:
-    cd infra/iac && terraform init
+    terraform -chdir=infra/iac init
+
+# add an IMAP user to Parameter Store (usage: just add-user user@example.com mypassword)
+add-user email password:
+    #!/usr/bin/env bash
+    PARAM_NAME="/ses-imap/users/$(echo '{{email}}' | sed 's/@/\//')"
+    HASH=$(htpasswd -bnBC 10 "" '{{password}}' | tr -d ':\n' | sed 's/$2y/$2a/')
+    aws ssm put-parameter \
+        --name "$PARAM_NAME" \
+        --type SecureString \
+        --value "$HASH" \
+        --region {{region}} \
+        --overwrite
+    @echo "Created IMAP user {{email}}"
 
 # clean up build artifacts
 clean:

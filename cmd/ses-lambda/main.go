@@ -51,13 +51,8 @@ func processRecord(ctx context.Context, cfg *config.Config, st *store.Store, rec
 		mailbox = strings.ToLower(sesMsg.Receipt.Recipients[0])
 	}
 
-	// Derive the S3 key from the recipient address.
-	// SES stores objects as: <domain>/<localpart>/<message-id>
-	// e.g., gordon@gemovationlabs.com -> gemovationlabs.com/gordon/<message-id>
-	s3Key := recipientToS3Key(mailbox, sesMsg.Mail.MessageID)
-	if cfg.S3Prefix != "" {
-		s3Key = cfg.S3Prefix + sesMsg.Mail.MessageID
-	}
+	// Derive the S3 key using the prefix map, with fallback to recipient-based derivation.
+	s3Key := resolveS3Key(cfg, mailbox, sesMsg.Mail.MessageID)
 	log.Printf("processing message %s (S3 key: %s)", sesMsg.Mail.MessageID, s3Key)
 
 	// Fetch the raw message from S3 to parse headers.
@@ -126,17 +121,30 @@ func parseAddress(raw string) (addr, display string) {
 	return parsed.Address, parsed.Name
 }
 
-// recipientToS3Key derives the S3 object key from a recipient email address
-// and SES message ID. SES stores objects as <domain>/<localpart>/<message-id>.
-func recipientToS3Key(recipient, messageID string) string {
-	parts := strings.SplitN(recipient, "@", 2)
-	if len(parts) != 2 {
-		// Fallback: use the recipient as-is (e.g., a catch-all domain).
-		return recipient + "/" + messageID
+// resolveS3Key determines the S3 object key for a message.
+// It checks the S3 prefix map for an exact recipient match first,
+// then falls back to a domain-level match (for catch-all rules),
+// and finally derives the key from the recipient address.
+func resolveS3Key(cfg *config.Config, recipient, messageID string) string {
+	// Exact recipient match (e.g., "gordon@example.com").
+	if prefix, ok := cfg.S3PrefixMap[recipient]; ok {
+		return prefix + "/" + messageID
 	}
-	localpart := parts[0]
-	domain := parts[1]
-	return domain + "/" + localpart + "/" + messageID
+
+	// Domain-level match for catch-all rules (e.g., "example.com").
+	if parts := strings.SplitN(recipient, "@", 2); len(parts) == 2 {
+		domain := parts[1]
+		if prefix, ok := cfg.S3PrefixMap[domain]; ok {
+			return prefix + "/" + messageID
+		}
+	}
+
+	// Fallback: derive from recipient address (<domain>/<localpart>/<message-id>).
+	parts := strings.SplitN(recipient, "@", 2)
+	if len(parts) == 2 {
+		return parts[1] + "/" + parts[0] + "/" + messageID
+	}
+	return recipient + "/" + messageID
 }
 
 // decodeHeader decodes RFC 2047 encoded header values.
