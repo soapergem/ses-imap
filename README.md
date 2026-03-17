@@ -2,6 +2,14 @@
 
 An IMAP server that provides read access to emails received by Amazon SES and stored in S3. SES handles all inbound mail delivery; this service is purely a read layer that lets you connect with any standard IMAP client (Thunderbird, Apple Mail, etc.).
 
+## Why would anyone use this?
+
+Amazon offers a managed email sending service called SES (Simple Email Service). SES is very powerful but it also very low-level. If you buy a domain and configure it to work with SES, you do not get an easily accessible mailbox that you can connect Mail clients to, such as Apple Mail, Outlook, or Thunderbird. If you want that functionality out-of-the-box, then Amazon provides another managed service called WorkMail, but WorkMail costs $4 per user per month. Under the hood, WorkMail is fundamentally just using all the same primitives that SES uses. This application is meant to be a thin layer on top of of SES specifically for email receiving. It configures rules in your default SES ruleset for receiving messages, saving their full content in S3, and saving a catalog of available messages in DynamoDB. Finally, a container process acts as an IMAP server which allows standard mail clients to connect and read messages. In other words, you get all the receiving functionality of WorkMail for unlimited users and domains, but at basically no cost.
+
+### Important caveat
+
+Keep in mind this is for inbound mail only. You can configure your Mail client to send outbound messages using the same SES instance, but you won't have a "Sent Messages" folder because that's not how SES works. In the future, this server could be expanded to essentially act as a proxy SMTP layer for outbound messages, saving them in S3 as well. But as of right now it only handles message receiving.
+
 ## Architecture
 
 ```
