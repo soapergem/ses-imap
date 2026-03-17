@@ -28,7 +28,9 @@ func NewServer(cfg *config.Config, st *store.Store, auth *store.Auth) *Server {
 	}
 
 	caps := imap.CapSet{
-		imap.CapIMAP4rev1: {},
+		imap.CapIMAP4rev1:  {},
+		imap.CapMove:       {},
+		imap.CapSpecialUse: {},
 	}
 
 	opts := &imapserver.Options{

@@ -61,6 +61,7 @@ data "aws_iam_policy_document" "imap_server" {
   statement {
     effect = "Allow"
     actions = [
+      "dynamodb:BatchWriteItem",
       "dynamodb:GetItem",
       "dynamodb:PutItem",
       "dynamodb:Query",
@@ -75,6 +76,7 @@ data "aws_iam_policy_document" "imap_server" {
     actions = [
       "s3:GetObject",
       "s3:HeadObject",
+      "s3:PutObject",
     ]
     resources = ["arn:aws:s3:::${var.s3_bucket}/*"]
   }

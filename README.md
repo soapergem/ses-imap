@@ -8,7 +8,9 @@ Amazon offers a managed email sending service called SES (Simple Email Service).
 
 ### Important caveat
 
-Keep in mind this is for inbound mail only. You can configure your Mail client to send outbound messages using the same SES instance, but you won't have a "Sent Messages" folder because that's not how SES works. In the future, this server could be expanded to essentially act as a proxy SMTP layer for outbound messages, saving them in S3 as well. But as of right now it only handles message receiving.
+Keep in mind this is a **receive-only IMAP server**. Amazon SES does not offer any capability to capture outbound emails sent via its SMTP interface into an S3 bucket or receipt rule.
+
+When you send an email using SES SMTP through your email client, the client uses IMAP `APPEND` to save a copy of the sent email to your `Sent` folder. This is fully supported by `ses-imap` — the message will be saved to your S3 bucket and indexed in DynamoDB so you have a complete record of your sent mail. However, SES itself will not automatically place copies of outgoing mail into S3.
 
 ## Architecture
 
@@ -23,6 +25,7 @@ IMAP client (Thunderbird, Apple Mail, etc.)
   -> IMAP server (this project, running in K8s)
       -> reads metadata from DynamoDB
       -> fetches message bodies from S3
+      -> stores draft/sent messages to S3 and DynamoDB via IMAP APPEND
       -> manages flags/state in DynamoDB
       -> authenticates users via SSM Parameter Store
 ```
@@ -226,7 +229,9 @@ The Lambda derives the S3 object key from the recipient email address. For a mes
 example.com/user/abc123
 ```
 
-This matches the SES receipt rule behavior when the S3 action prefix is set to `<domain>/<localpart>` via the `s3_prefix` field in the `mailboxes` variable.
+This matches the SES receipt rule behavior when the S3 action prefix is set to `<domain>/<localpart>` via the `s3_prefix` field in the `mailboxes` variable. Note that if you use the catch-all pattern (`mailboxes.catchall.recipients = ["example.com"]`), the Lambda looks at the domain in the recipient's address to locate the folder matching the domain.
+
+When you upload draft or sent messages to `ses-imap` via the IMAP `APPEND` command, it automatically generates a UUID and stores the raw message directly to S3 at `<domain>/<localpart>/appended/<uuid>`.
 
 ## Configuration
 
@@ -241,6 +246,8 @@ This matches the SES receipt rule behavior when the S3 action prefix is set to `
 | `SSM_PREFIX` | `/ses-imap/users` | SSM parameter prefix for user credentials |
 | `SSM_CACHE_TTL` | `300` | Credential cache TTL in seconds |
 | `DEFAULT_MAILBOX` | `INBOX` | Default mailbox name |
+| `LOG_LEVEL` | `info` | Logging verbosity (`debug`, `info`, `warn`, `error`) |
+| `HEALTH_ADDR` | `:8080` | Liveness probe HTTP server port |
 
 ### Lambda (environment variables)
 
@@ -291,11 +298,13 @@ Supported:
 - SEARCH (by flags, header fields, UID ranges)
 - EXPUNGE
 - IDLE (polls DynamoDB every 30s for new messages)
+- COPY and MOVE (between supported mailboxes)
+- APPEND (clients can save sent messages and drafts to S3 via IMAP)
+- SPECIAL-USE (automatically maps predefined folders to `\Sent`, `\Trash`, `\Drafts`, `\Junk`, `\Archive`)
 
 Not supported (by design):
-- APPEND (messages are ingested only via SES)
-- COPY/MOVE
-- DELETE/RENAME mailboxes
+- Arbitrary mailbox creation (only predefined special-use folders like `Sent`, `Trash`, etc. are supported)
+- RENAME mailboxes
 - Full-text body search
 
 ## License

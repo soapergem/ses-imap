@@ -3,9 +3,14 @@ package imap
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
+	"net/mail"
 	"slices"
 	"strings"
 	"time"
@@ -32,6 +37,7 @@ type Session struct {
 }
 
 var _ imapserver.Session = (*Session)(nil)
+var _ imapserver.SessionMove = (*Session)(nil)
 
 // Close is called when the client disconnects.
 func (s *Session) Close() error {
@@ -91,19 +97,28 @@ func (s *Session) Select(mailbox string, options *imap.SelectOptions) (*imap.Sel
 
 // Create creates a new mailbox.
 func (s *Session) Create(mailbox string, options *imap.CreateOptions) error {
-	mailbox = s.resolveMailbox(mailbox)
-	if err := s.checkMailboxAccess(mailbox); err != nil {
+	slog.Debug("CREATE", "user", s.user, "mailbox", mailbox)
+	resolved := s.resolveMailbox(mailbox)
+	if err := s.checkMailboxAccess(resolved); err != nil {
 		return err
 	}
 	ctx := context.Background()
-	_, err := s.store.EnsureMailbox(ctx, mailbox)
+	_, err := s.store.EnsureMailbox(ctx, resolved)
 	return err
 }
 
-// Delete deletes a mailbox.
+// Delete deletes a mailbox. INBOX cannot be deleted.
 func (s *Session) Delete(mailbox string) error {
-	// Not supported -- we don't want to accidentally delete mailboxes.
-	return fmt.Errorf("DELETE not supported")
+	slog.Debug("DELETE", "user", s.user, "mailbox", mailbox)
+	if strings.EqualFold(mailbox, "INBOX") {
+		return fmt.Errorf("cannot delete INBOX")
+	}
+	resolved := s.resolveMailbox(mailbox)
+	if err := s.checkMailboxAccess(resolved); err != nil {
+		return err
+	}
+	ctx := context.Background()
+	return s.store.DeleteMailbox(ctx, resolved)
 }
 
 // Rename renames a mailbox.
@@ -122,16 +137,35 @@ func (s *Session) Unsubscribe(mailbox string) error {
 }
 
 // List lists mailboxes matching the given patterns.
-// We advertise INBOX as the only mailbox, which maps to the user's actual mailbox internally.
+// Returns INBOX plus all special-use folders with their attributes.
 func (s *Session) List(w *imapserver.ListWriter, ref string, patterns []string, options *imap.ListOptions) error {
 	slog.Debug("LIST", "user", s.user, "ref", ref, "patterns", patterns)
+
+	// All mailboxes to advertise: INBOX + special folders.
+	type mailboxEntry struct {
+		name  string
+		attrs []imap.MailboxAttr
+	}
+	mailboxes := []mailboxEntry{
+		{"INBOX", []imap.MailboxAttr{imap.MailboxAttrHasNoChildren}},
+	}
+	for _, f := range specialFolders {
+		mailboxes = append(mailboxes, mailboxEntry{
+			name:  f.Name,
+			attrs: []imap.MailboxAttr{f.Attr, imap.MailboxAttrHasNoChildren},
+		})
+	}
+
 	for _, pattern := range patterns {
-		if imapserver.MatchList("INBOX", '/', ref, pattern) {
-			if err := w.WriteList(&imap.ListData{
-				Mailbox: "INBOX",
-				Delim:   '/',
-			}); err != nil {
-				return err
+		for _, mb := range mailboxes {
+			if imapserver.MatchList(mb.name, '/', ref, pattern) {
+				if err := w.WriteList(&imap.ListData{
+					Mailbox: mb.name,
+					Attrs:   mb.attrs,
+					Delim:   '/',
+				}); err != nil {
+					return err
+				}
 			}
 		}
 	}
@@ -177,10 +211,91 @@ func (s *Session) Status(mailbox string, options *imap.StatusOptions) (*imap.Sta
 	}, nil
 }
 
-// Append adds a message to a mailbox.
+// Append adds a message to a mailbox. Used by clients to save sent messages, drafts, etc.
 func (s *Session) Append(mailbox string, r imap.LiteralReader, options *imap.AppendOptions) (*imap.AppendData, error) {
-	// We don't support appending messages -- SES is the only ingestion path.
-	return nil, fmt.Errorf("APPEND not supported; messages are ingested via SES")
+	slog.Debug("APPEND", "user", s.user, "mailbox", mailbox)
+	resolved := s.resolveMailbox(mailbox)
+	if err := s.checkMailboxAccess(resolved); err != nil {
+		return nil, err
+	}
+
+	ctx := context.Background()
+
+	// Read the full message body.
+	body, err := io.ReadAll(r)
+	if err != nil {
+		return nil, fmt.Errorf("reading message body: %w", err)
+	}
+
+	// Generate a unique S3 key for the appended message.
+	parts := strings.SplitN(s.user, "@", 2)
+	var s3Key string
+	if len(parts) == 2 {
+		s3Key = parts[1] + "/" + parts[0] + "/appended/" + generateID()
+	} else {
+		s3Key = s.user + "/appended/" + generateID()
+	}
+
+	// Write message body to S3.
+	if err := s.store.PutMessageBody(ctx, s3Key, body); err != nil {
+		return nil, fmt.Errorf("writing message to S3: %w", err)
+	}
+
+	// Parse headers.
+	msg, err := mail.ReadMessage(bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("parsing message headers: %w", err)
+	}
+
+	// Ensure the mailbox exists.
+	if _, err := s.store.EnsureMailbox(ctx, resolved); err != nil {
+		return nil, fmt.Errorf("ensuring mailbox: %w", err)
+	}
+
+	// Allocate a UID.
+	uid, err := s.store.AllocateUID(ctx, resolved)
+	if err != nil {
+		return nil, fmt.Errorf("allocating UID: %w", err)
+	}
+
+	fromAddr, fromDisplay := parseAppendAddress(msg.Header.Get("From"))
+	toAddr, _ := parseAppendAddress(msg.Header.Get("To"))
+
+	// Determine flags.
+	var flags []string
+	if options != nil {
+		for _, f := range options.Flags {
+			flags = append(flags, string(f))
+		}
+	}
+
+	meta := &store.MessageMeta{
+		Mailbox:     resolved,
+		UID:         uid,
+		S3Key:       s3Key,
+		MessageID:   msg.Header.Get("Message-ID"),
+		FromAddr:    fromAddr,
+		FromDisplay: fromDisplay,
+		ToAddr:      toAddr,
+		Subject:     msg.Header.Get("Subject"),
+		Date:        msg.Header.Get("Date"),
+		Size:        uint32(len(body)),
+		Flags:       flags,
+	}
+
+	if err := s.store.PutMessageOnce(ctx, meta); err != nil {
+		if errors.Is(err, store.ErrDuplicateMessage) {
+			s.store.ReleaseUID(ctx, resolved, uid)
+		}
+		return nil, fmt.Errorf("writing message metadata: %w", err)
+	}
+
+	slog.Info("APPEND", "user", s.user, "mailbox", mailbox, "uid", uid, "subject", meta.Subject)
+
+	return &imap.AppendData{
+		UID:         imap.UID(uid),
+		UIDValidity: 0,
+	}, nil
 }
 
 // Poll checks for mailbox updates.
@@ -445,7 +560,144 @@ func (s *Session) Store(w *imapserver.FetchWriter, numSet imap.NumSet, flags *im
 
 // Copy copies messages to another mailbox.
 func (s *Session) Copy(numSet imap.NumSet, dest string) (*imap.CopyData, error) {
-	return nil, fmt.Errorf("COPY not supported")
+	slog.Debug("COPY", "user", s.user, "dest", dest)
+	destResolved := s.resolveMailbox(dest)
+	if err := s.checkMailboxAccess(destResolved); err != nil {
+		return nil, err
+	}
+
+	ctx := context.Background()
+
+	if _, err := s.store.EnsureMailbox(ctx, destResolved); err != nil {
+		return nil, fmt.Errorf("ensuring destination mailbox: %w", err)
+	}
+
+	messages := s.resolveNumSet(numSet)
+	var sourceUIDs, destUIDs imap.UIDSet
+
+	for _, msg := range messages {
+		uid, err := s.store.AllocateUID(ctx, destResolved)
+		if err != nil {
+			return nil, fmt.Errorf("allocating UID in destination: %w", err)
+		}
+
+		destMsg := &store.MessageMeta{
+			Mailbox:     destResolved,
+			UID:         uid,
+			S3Key:       msg.S3Key,
+			MessageID:   msg.MessageID,
+			FromAddr:    msg.FromAddr,
+			FromDisplay: msg.FromDisplay,
+			ToAddr:      msg.ToAddr,
+			Subject:     msg.Subject,
+			Date:        msg.Date,
+			Size:        msg.Size,
+			Flags:       msg.Flags,
+		}
+
+		if err := s.store.PutMessageOnce(ctx, destMsg); err != nil {
+			if errors.Is(err, store.ErrDuplicateMessage) {
+				s.store.ReleaseUID(ctx, destResolved, uid)
+				continue
+			}
+			return nil, fmt.Errorf("copying message: %w", err)
+		}
+
+		sourceUIDs.AddNum(imap.UID(msg.UID))
+		destUIDs.AddNum(imap.UID(uid))
+	}
+
+	return &imap.CopyData{
+		UIDValidity: 0, // Will be filled by the client from SELECT.
+		SourceUIDs:  sourceUIDs,
+		DestUIDs:    destUIDs,
+	}, nil
+}
+
+// Move moves messages to another mailbox (COPY + EXPUNGE atomically).
+func (s *Session) Move(w *imapserver.MoveWriter, numSet imap.NumSet, dest string) error {
+	slog.Debug("MOVE", "user", s.user, "dest", dest)
+	destResolved := s.resolveMailbox(dest)
+	if err := s.checkMailboxAccess(destResolved); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+
+	if _, err := s.store.EnsureMailbox(ctx, destResolved); err != nil {
+		return fmt.Errorf("ensuring destination mailbox: %w", err)
+	}
+
+	messages := s.resolveNumSet(numSet)
+	var sourceUIDs, destUIDs imap.UIDSet
+
+	// Copy to destination.
+	for _, msg := range messages {
+		uid, err := s.store.AllocateUID(ctx, destResolved)
+		if err != nil {
+			return fmt.Errorf("allocating UID in destination: %w", err)
+		}
+
+		destMsg := &store.MessageMeta{
+			Mailbox:     destResolved,
+			UID:         uid,
+			S3Key:       msg.S3Key,
+			MessageID:   msg.MessageID,
+			FromAddr:    msg.FromAddr,
+			FromDisplay: msg.FromDisplay,
+			ToAddr:      msg.ToAddr,
+			Subject:     msg.Subject,
+			Date:        msg.Date,
+			Size:        msg.Size,
+			Flags:       msg.Flags,
+		}
+
+		if err := s.store.PutMessageOnce(ctx, destMsg); err != nil {
+			if errors.Is(err, store.ErrDuplicateMessage) {
+				s.store.ReleaseUID(ctx, destResolved, uid)
+				continue
+			}
+			return fmt.Errorf("moving message: %w", err)
+		}
+
+		sourceUIDs.AddNum(imap.UID(msg.UID))
+		destUIDs.AddNum(imap.UID(uid))
+	}
+
+	// Write COPYUID response.
+	if err := w.WriteCopyData(&imap.CopyData{
+		UIDValidity: 0,
+		SourceUIDs:  sourceUIDs,
+		DestUIDs:    destUIDs,
+	}); err != nil {
+		return err
+	}
+
+	// Expunge source messages in reverse order.
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		seqNum := s.seqNumForUID(msg.UID)
+		if seqNum == 0 {
+			continue
+		}
+
+		if err := s.store.DeleteMessage(ctx, s.selectedMailbox, msg.UID); err != nil {
+			return fmt.Errorf("expunging moved message: %w", err)
+		}
+
+		if err := w.WriteExpunge(seqNum); err != nil {
+			return err
+		}
+	}
+
+	// Refresh cached messages.
+	refreshed, err := s.store.ListMessages(ctx, s.selectedMailbox)
+	if err != nil {
+		return err
+	}
+	s.messages = refreshed
+
+	return nil
 }
 
 // seqNumForUID returns the 1-based sequence number for a UID in the current mailbox.
@@ -553,24 +805,68 @@ func applyStoreFlags(existing []string, sf *imap.StoreFlags) []string {
 	return existing
 }
 
-// resolveMailbox maps INBOX to the authenticated user's mailbox name.
-// IMAP clients always expect INBOX to exist, so we treat it as an alias.
+// resolveMailbox maps client-visible mailbox names to DynamoDB partition keys.
+//   - INBOX -> gordon@gemovationlabs.com
+//   - Sent  -> gordon@gemovationlabs.com/Sent
+//   - Trash -> gordon@gemovationlabs.com/Trash
 func (s *Session) resolveMailbox(mailbox string) string {
 	if strings.EqualFold(mailbox, "INBOX") {
 		return s.user
 	}
+	if isSpecialFolder(mailbox) {
+		return s.user + "/" + mailbox
+	}
 	return mailbox
 }
 
+// clientMailboxName maps a DynamoDB partition key back to the client-visible name.
+//   - gordon@gemovationlabs.com       -> INBOX
+//   - gordon@gemovationlabs.com/Sent  -> Sent
+func (s *Session) clientMailboxName(partition string) string {
+	if strings.EqualFold(partition, s.user) {
+		return "INBOX"
+	}
+	prefix := s.user + "/"
+	if strings.HasPrefix(strings.ToLower(partition), strings.ToLower(prefix)) {
+		return partition[len(prefix):]
+	}
+	return partition
+}
+
 // checkMailboxAccess verifies that the authenticated user is allowed to access
-// the given mailbox. Users can only access their own mailbox (the IMAP username
-// must match the mailbox name exactly). INBOX is treated as an alias.
+// the given mailbox. The resolved partition key must be the user's own mailbox
+// or a sub-folder of it.
 func (s *Session) checkMailboxAccess(mailbox string) error {
 	if s.user == "" {
 		return fmt.Errorf("not authenticated")
 	}
-	if strings.EqualFold(s.resolveMailbox(mailbox), s.user) {
+	resolved := s.resolveMailbox(mailbox)
+	lower := strings.ToLower(resolved)
+	userLower := strings.ToLower(s.user)
+	if lower == userLower || strings.HasPrefix(lower, userLower+"/") {
 		return nil
 	}
 	return fmt.Errorf("access denied to mailbox %q", mailbox)
+}
+
+// generateID generates a random hex ID for appended messages.
+func generateID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		// Fallback to timestamp if crypto/rand fails.
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+// parseAppendAddress extracts the email address and display name from an RFC 5322 address.
+func parseAppendAddress(raw string) (addr, display string) {
+	if raw == "" {
+		return "", ""
+	}
+	parsed, err := mail.ParseAddress(raw)
+	if err != nil {
+		return raw, ""
+	}
+	return parsed.Address, parsed.Name
 }

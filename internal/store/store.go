@@ -2,6 +2,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -423,6 +424,74 @@ func (s *Store) DeleteMessage(ctx context.Context, mailbox string, uid uint32) e
 	if err != nil {
 		return fmt.Errorf("deleting message: %w", err)
 	}
+	return nil
+}
+
+// PutMessageBody writes a raw RFC 5322 message to S3.
+func (s *Store) PutMessageBody(ctx context.Context, s3Key string, body []byte) error {
+	_, err := s.s3client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: &s.bucket,
+		Key:    &s3Key,
+		Body:   bytes.NewReader(body),
+	})
+	if err != nil {
+		return fmt.Errorf("putting S3 object %q: %w", s3Key, err)
+	}
+	return nil
+}
+
+// DeleteMailbox removes all items in a mailbox partition (messages, dedup sentinels, metadata).
+func (s *Store) DeleteMailbox(ctx context.Context, mailbox string) error {
+	// Query all items in the partition.
+	keyCond := expression.Key("mailbox").Equal(expression.Value(mailbox))
+	expr, err := expression.NewBuilder().WithKeyCondition(keyCond).Build()
+	if err != nil {
+		return fmt.Errorf("building expression: %w", err)
+	}
+
+	var items []map[string]dynamotypes.AttributeValue
+	paginator := dynamodb.NewQueryPaginator(s.dynamo, &dynamodb.QueryInput{
+		TableName:                 &s.tableName,
+		KeyConditionExpression:    expr.KeyCondition(),
+		ExpressionAttributeNames:  expr.Names(),
+		ExpressionAttributeValues: expr.Values(),
+		ProjectionExpression:      aws.String("mailbox, uid"),
+	})
+
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return fmt.Errorf("querying mailbox for deletion: %w", err)
+		}
+		items = append(items, page.Items...)
+	}
+
+	// Batch delete in groups of 25 (DynamoDB limit).
+	for i := 0; i < len(items); i += 25 {
+		end := i + 25
+		if end > len(items) {
+			end = len(items)
+		}
+
+		var requests []dynamotypes.WriteRequest
+		for _, item := range items[i:end] {
+			requests = append(requests, dynamotypes.WriteRequest{
+				DeleteRequest: &dynamotypes.DeleteRequest{
+					Key: item,
+				},
+			})
+		}
+
+		_, err := s.dynamo.BatchWriteItem(ctx, &dynamodb.BatchWriteItemInput{
+			RequestItems: map[string][]dynamotypes.WriteRequest{
+				s.tableName: requests,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("batch deleting mailbox items: %w", err)
+		}
+	}
+
 	return nil
 }
 

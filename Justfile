@@ -19,6 +19,8 @@ test:
 
 # build multi-architecture container image
 build:
+    GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/imap-server-arm64 ./cmd/imap-server
+    GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags="-s -w" -o bin/imap-server-amd64 ./cmd/imap-server
     @podman manifest create {{account_id}}.dkr.ecr.{{region}}.amazonaws.com/{{ecr_repo}}:latest || true
     @podman build --platform linux/arm64 --manifest {{account_id}}.dkr.ecr.{{region}}.amazonaws.com/{{ecr_repo}}:latest .
     @podman build --platform linux/amd64 --manifest {{account_id}}.dkr.ecr.{{region}}.amazonaws.com/{{ecr_repo}}:latest .
