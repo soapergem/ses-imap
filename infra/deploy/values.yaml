@@ -1,7 +1,7 @@
 image:
   repository: ""
   tag: latest
-  pullSecretName: k8s-ecr-login-renew-docker-secret
+  pullSecretName: ""
 
 app:
   name: ses-imap

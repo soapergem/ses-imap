@@ -189,7 +189,7 @@ just build-lambda
 
 ```bash
 just setup       # one-time: initialize QEMU for multi-arch builds
-just build-image
+just build
 just login
 just push
 ```
@@ -271,22 +271,7 @@ Mailbox metadata (uid=0): `uid_next`, `uid_validity`.
 
 ## Justfile Recipes
 
-```
-just build-lambda                       # build Lambda zip
-just test                               # run tests
-just build-image                        # build multi-arch container image
-just login                              # authenticate with ECR
-just push                               # push container image to ECR
-just deploy                             # install/upgrade Helm chart
-just undeploy                           # uninstall Helm chart
-just init                               # terraform init
-just plan                               # terraform plan
-just apply                              # terraform apply
-just add-user user@example.com pass     # create IMAP user in SSM
-just clean                              # remove build artifacts
-just prune                              # remove container images
-just setup                              # initialize QEMU for multi-arch builds
-```
+To see a list of all the available Justfile recipes, type `just`.
 
 ## IMAP Capabilities
 
