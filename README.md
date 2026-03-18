@@ -1,6 +1,6 @@
 # ses-imap
 
-An IMAP server that provides read access to emails received by Amazon SES and stored in S3. SES handles all inbound mail delivery; this service is purely a read layer that lets you connect with any standard IMAP client (Thunderbird, Apple Mail, etc.).
+An IMAP server that provides read access to emails received by Amazon SES and stored in S3. SES handles all inbound mail delivery; this service is purely a read layer that lets you connect with any standard IMAP client.
 
 ## Why would anyone use this?
 
