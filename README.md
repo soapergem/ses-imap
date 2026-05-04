@@ -74,11 +74,14 @@ export S3_BUCKET="my-ses-email-bucket"
 
 Terraform-specific configuration goes in `infra/iac/terraform.tfvars` (gitignored). The key variable is `mailboxes`, which defines the SES receipt rules to create. Each mailbox gets its own rule with an S3 action and the ingest Lambda, plus any additional Lambdas you specify.
 
+If you already have an SES receipt rule set, keep `create_rule_set = false` and point `ses_rule_set_name` at it. If not, set `create_rule_set = true` and Terraform will create and activate the rule set for you.
+
 ### Basic example (single mailbox)
 
 ```hcl
 s3_bucket         = "my-ses-email-bucket"
 ses_rule_set_name = "default-rule-set"
+create_rule_set   = false
 
 mailboxes = {
   info = {
@@ -93,6 +96,7 @@ mailboxes = {
 ```hcl
 s3_bucket         = "my-ses-email-bucket"
 ses_rule_set_name = "default-rule-set"
+create_rule_set   = false
 
 mailboxes = {
   info = {
@@ -113,6 +117,7 @@ mailboxes = {
 ```hcl
 s3_bucket         = "my-ses-email-bucket"
 ses_rule_set_name = "default-rule-set"
+create_rule_set   = false
 
 mailboxes = {
   catchall = {
@@ -129,6 +134,7 @@ If `mailboxes` is omitted or empty, no SES receipt rules are created. The Dynamo
 ```hcl
 s3_bucket         = "my-ses-email-bucket"
 ses_rule_set_name = "default-rule-set"
+create_rule_set   = false
 ```
 
 ### Mailbox fields
@@ -267,7 +273,8 @@ When you upload draft or sent messages to `ses-imap` via the IMAP `APPEND` comma
 | `lambda_zip_path` | `../../lambda.zip` | Path to Lambda zip |
 | `s3_bucket` | *(required)* | S3 bucket for SES messages |
 | `default_mailbox` | `INBOX` | Default mailbox |
-| `ses_rule_set_name` | *(required)* | Existing SES receipt rule set |
+| `ses_rule_set_name` | `default-rule-set` | SES receipt rule set name to use or create |
+| `create_rule_set` | `false` | Create and activate the SES receipt rule set named by `ses_rule_set_name` |
 | `mailboxes` | `{}` | Map of mailbox definitions (see above) |
 | `imap_users` | `{}` | Map of username to bcrypt hash |
 

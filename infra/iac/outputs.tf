@@ -23,6 +23,11 @@ output "ssm_prefix" {
   value       = local.ssm_prefix
 }
 
+output "s3_bucket" {
+  description = "S3 bucket used for SES message storage"
+  value       = var.s3_bucket
+}
+
 output "imap_server_access_key_id" {
   description = "AWS access key ID for the IMAP server"
   value       = aws_iam_access_key.imap_server.id

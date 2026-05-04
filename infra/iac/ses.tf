@@ -9,11 +9,27 @@ resource "aws_lambda_permission" "ses_invoke_additional" {
   source_account = local.account_id
 }
 
+resource "aws_ses_receipt_rule_set" "this" {
+  count = var.create_rule_set ? 1 : 0
+
+  rule_set_name = var.ses_rule_set_name
+}
+
+resource "aws_ses_active_receipt_rule_set" "this" {
+  count = var.create_rule_set ? 1 : 0
+
+  rule_set_name = aws_ses_receipt_rule_set.this[0].rule_set_name
+}
+
+locals {
+  ses_rule_set_name = var.create_rule_set ? aws_ses_receipt_rule_set.this[0].rule_set_name : var.ses_rule_set_name
+}
+
 resource "aws_ses_receipt_rule" "mailbox" {
   for_each = var.mailboxes
 
   name          = "${local.name_prefix}ses-imap-${each.key}"
-  rule_set_name = var.ses_rule_set_name
+  rule_set_name = local.ses_rule_set_name
   recipients    = each.value.recipients
   enabled       = true
   scan_enabled  = true
@@ -41,6 +57,9 @@ resource "aws_ses_receipt_rule" "mailbox" {
       position        = 3 + lambda_action.key
     }
   }
-
-  depends_on = [aws_lambda_permission.ses_invoke, aws_lambda_permission.ses_invoke_additional]
+  depends_on = [
+    aws_lambda_permission.ses_invoke,
+    aws_lambda_permission.ses_invoke_additional,
+    aws_ses_receipt_rule_set.this,
+  ]
 }

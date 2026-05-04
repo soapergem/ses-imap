@@ -45,6 +45,13 @@ variable "s3_bucket" {
 }
 
 variable "ses_rule_set_name" {
-  description = "Name of the existing SES receipt rule set"
+  description = "Name of the SES receipt rule set to use or create"
   type        = string
+  default     = "default-rule-set"
+}
+
+variable "create_rule_set" {
+  description = "Whether to create and activate the SES receipt rule set named by ses_rule_set_name"
+  type        = bool
+  default     = false
 }
